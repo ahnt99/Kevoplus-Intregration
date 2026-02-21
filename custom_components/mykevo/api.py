@@ -465,76 +465,86 @@ class KevoApi:
 
                 try:
                     _LOGGER.debug("login: step 4 - GET auth redirect")
-                    # The Location header may be absolute or relative depending
-                    # on the server response. Prepending the base to an already-
-                    # absolute URL produces a garbage hostname that fails DNS.
                     if redirect_location.startswith("http"):
                         step4_url = redirect_location
                     else:
                         step4_url = UNIKEY_LOGIN_URL_BASE + redirect_location
                     _LOGGER.debug("login: step 4 url -> %s", step4_url)
-                    res = await client.get(step4_url, follow_redirects=False)
+                    # Follow redirects here so we can catch the final redirect
+                    # to mykevo.com regardless of how many hops there are.
+                    # We read the code from res.url (the final URL) since the
+                    # auth server puts the code in the fragment of the redirect
+                    # URI (https://mykevo.com/#/token?code=...).
+                    res = await client.get(step4_url, follow_redirects=True)
                 except Exception as ex:
                     _LOGGER.error("login: step 4 failed: %s", ex)
                     raise
 
-                _LOGGER.debug("login: step 4 status=%s", res.status_code)
+                _LOGGER.debug("login: step 4 final url=%s status=%s", res.url, res.status_code)
 
-                if res.status_code == 302:
-                    redirect_location = res.headers["Location"]
-                    _LOGGER.debug("login: step 4 redirect -> %s", redirect_location)
-                    redirect_url = urlparse(redirect_location)
-                    redirect_fragment = redirect_url.fragment
-                    redirect_fragment_url = urlparse(redirect_fragment)
-                    query_params = parse_qs(redirect_fragment_url.query)
+                # The code lands in the fragment of the final redirect URL.
+                # res.url is the URL httpx actually fetched (after following
+                # redirects), but fragments are never sent to the server so
+                # httpx won't have them. We need to look at the redirect history
+                # to find the last Location header that contained the fragment.
+                code = None
+                for hist_resp in reversed(res.history):
+                    loc = hist_resp.headers.get("location", "")
+                    _LOGGER.debug("login: step 4 history location -> %s", loc)
+                    parsed = urlparse(loc)
+                    # Fragment-based redirect: https://mykevo.com/#/token?code=...
+                    fragment_params = parse_qs(urlparse(parsed.fragment).query)
+                    if "code" in fragment_params:
+                        code = fragment_params["code"][0]
+                        _LOGGER.debug("login: step 4 found code in fragment")
+                        break
+                    # Query-based redirect: https://mykevo.com/token?code=...
+                    query_params = parse_qs(parsed.query)
+                    if "code" in query_params:
+                        code = query_params["code"][0]
+                        _LOGGER.debug("login: step 4 found code in query")
+                        break
 
-                    _LOGGER.debug("login: step 4 fragment=%s query_params=%s", redirect_fragment, query_params)
-                    if "code" not in query_params:
-                        _LOGGER.error("login: step 4 no code in redirect fragment: %s", redirect_location)
-                        raise KevoAuthError()
-
-                    client.cookies = res.cookies
-
-                    # parse_qs always returns lists — extract the first value.
-                    post_params = {
-                        "client_id": CLIENT_ID,
-                        "client_secret": CLIENT_SECRET,
-                        "code": query_params["code"][0],
-                        "code_verifier": code_verifier,
-                        "grant_type": "authorization_code",
-                        "redirect_uri": "https://mykevo.com/#/token",
-                    }
-
-                    try:
-                        _LOGGER.debug("login: step 5 - POST token exchange, code=%s", post_params["code"])
-                        res = await client.post(
-                            UNIKEY_LOGIN_URL_BASE + "/connect/token", data=post_params
-                        )
-                        if res.status_code != 200:
-                            _LOGGER.error("login: step 5 status=%s body=%s", res.status_code, res.text)
-                        res.raise_for_status()
-                    except httpx.HTTPStatusError as ex:
-                        _LOGGER.error("login: step 5 failed: %s", ex)
-                        raise
-                    except Exception as ex:
-                        _LOGGER.error("login: step 5 unexpected error: %s", ex)
-                        raise
-
-                    json_response = res.json()
-                    self._access_token = json_response["access_token"]
-                    self._id_token = json_response["id_token"]
-                    self._refresh_token = json_response["refresh_token"]
-                    self._expires_at = time.time() + json_response["expires_in"]
-                    jwt_value = jwt.decode(
-                        self._id_token, options={"verify_signature": False}
-                    )
-                    self._user_id = jwt_value["sub"]
-                    _LOGGER.debug("login: success, user_id=%s", self._user_id)
-                else:
-                    _LOGGER.error("login: step 4 expected 302, got %s.", res.status_code)
-                    _LOGGER.error("login: step 4 url was: %s", step4_url)
-                    _LOGGER.error("login: step 4 body: %s", res.text[:2000])
+                if code is None:
+                    _LOGGER.error("login: step 4 could not find code. History: %s", [r.headers.get("location") for r in res.history])
                     raise KevoAuthError()
+
+                client.cookies = res.cookies
+
+                post_params = {
+                    "client_id": CLIENT_ID,
+                    "client_secret": CLIENT_SECRET,
+                    "code": code,
+                    "code_verifier": code_verifier,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": "https://mykevo.com/#/token",
+                }
+
+                try:
+                    _LOGGER.debug("login: step 5 - POST token exchange, code=%s", code)
+                    res = await client.post(
+                        UNIKEY_LOGIN_URL_BASE + "/connect/token", data=post_params
+                    )
+                    if res.status_code != 200:
+                        _LOGGER.error("login: step 5 status=%s body=%s", res.status_code, res.text)
+                    res.raise_for_status()
+                except httpx.HTTPStatusError as ex:
+                    _LOGGER.error("login: step 5 failed: %s", ex)
+                    raise
+                except Exception as ex:
+                    _LOGGER.error("login: step 5 unexpected error: %s", ex)
+                    raise
+
+                json_response = res.json()
+                self._access_token = json_response["access_token"]
+                self._id_token = json_response["id_token"]
+                self._refresh_token = json_response["refresh_token"]
+                self._expires_at = time.time() + json_response["expires_in"]
+                jwt_value = jwt.decode(
+                    self._id_token, options={"verify_signature": False}
+                )
+                self._user_id = jwt_value["sub"]
+                _LOGGER.debug("login: success, user_id=%s", self._user_id)
             else:
                 _LOGGER.error("login: step 3 expected 302, got %s. Body: %s", res.status_code, res.text[:500])
                 res.raise_for_status()
