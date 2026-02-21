@@ -2,7 +2,7 @@
   "domain": "mykevo",
   "name": "MyKevo",
   "version": "1.0.0",
-  "documentation": "https://example.com",
+  "documentation": "https://github.com/ahnt99/Kevoplus-Intregration/blob/main/README.md",
   "requirements": [],
   "codeowners": [
     "ahnt99"
