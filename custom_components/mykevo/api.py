@@ -75,7 +75,14 @@ class KevoApi:
         self._devices: list = []
 
         if self._ssl_context is None:
-            self._ssl_context = ssl.create_default_context()
+            # ssl.create_default_context() calls set_default_verify_paths()
+            # internally, which does blocking I/O to load system CA certificates.
+            # We store a sentinel here and defer actual creation to the first
+            # async call via _get_ssl_context(), keeping __init__ non-blocking.
+            self._ssl_context = None
+            self._ssl_context_initialized = False
+        else:
+            self._ssl_context_initialized = True
 
         if self._client is None:
             self._client = httpx.AsyncClient()
