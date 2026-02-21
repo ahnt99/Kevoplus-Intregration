@@ -2,6 +2,6 @@
 
 This is pretty much forked from https://github.com/dcmeglio/pykevoplus/tree/master
 
-Place this folder inside `custom_components/` in your Home Assistant config directory.
+Use HACS to add this repo then install it.
 
 Restart Home Assistant, then add the integration via the UI.
