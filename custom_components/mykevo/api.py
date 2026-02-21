@@ -22,7 +22,7 @@ import websockets
 
 _LOGGER = logging.getLogger(__name__)
 
-from aiokevoplus.const import (
+from .const import (
     CLIENT_ID,
     CLIENT_SECRET,
     COMMAND_STATUS_CANCELLED,
