@@ -1,8 +1,0 @@
-{
-  "config": {
-    "error": {
-      "invalid_auth": "Invalid username or password",
-      "cannot_connect": "Cannot connect"
-    }
-  }
-}
