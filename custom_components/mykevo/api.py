@@ -111,7 +111,7 @@ class KevoApi:
             if not self._client_initialized:
                 # Pass the freshly-created SSL context so httpx doesn't go
                 # and load certifi a second time on its own.
-                http_client = httpx.AsyncClient(verify=ssl_ctx)
+                http_client = httpx.AsyncClient(verify=ssl_ctx, follow_redirects=False)
             return ssl_ctx, http_client
 
         loop = asyncio.get_event_loop()
@@ -382,6 +382,7 @@ class KevoApi:
             _LOGGER.debug("login: step 1 - GET /connect/authorize")
             res = await client.get(
                 UNIKEY_LOGIN_URL_BASE + "/connect/authorize",
+                follow_redirects=False,
                 params={
                     "client_id": CLIENT_ID,
                     "redirect_uri": "https://mykevo.com/#/token",
@@ -408,7 +409,7 @@ class KevoApi:
 
             try:
                 _LOGGER.debug("login: step 2 - GET login page")
-                res = await client.get(redirect_location)
+                res = await client.get(redirect_location, follow_redirects=False)
                 res.raise_for_status()
             except Exception as ex:
                 _LOGGER.error("login: step 2 failed: %s", ex)
@@ -472,7 +473,7 @@ class KevoApi:
                     else:
                         step4_url = UNIKEY_LOGIN_URL_BASE + redirect_location
                     _LOGGER.debug("login: step 4 url -> %s", step4_url)
-                    res = await client.get(step4_url)
+                    res = await client.get(step4_url, follow_redirects=False)
                 except Exception as ex:
                     _LOGGER.error("login: step 4 failed: %s", ex)
                     raise
@@ -487,6 +488,7 @@ class KevoApi:
                     redirect_fragment_url = urlparse(redirect_fragment)
                     query_params = parse_qs(redirect_fragment_url.query)
 
+                    _LOGGER.debug("login: step 4 fragment=%s query_params=%s", redirect_fragment, query_params)
                     if "code" not in query_params:
                         _LOGGER.error("login: step 4 no code in redirect fragment: %s", redirect_location)
                         raise KevoAuthError()
@@ -529,8 +531,10 @@ class KevoApi:
                     self._user_id = jwt_value["sub"]
                     _LOGGER.debug("login: success, user_id=%s", self._user_id)
                 else:
-                    _LOGGER.error("login: step 4 expected 302, got %s. Body: %s", res.status_code, res.text[:500])
-                    res.raise_for_status()
+                    _LOGGER.error("login: step 4 expected 302, got %s.", res.status_code)
+                    _LOGGER.error("login: step 4 url was: %s", step4_url)
+                    _LOGGER.error("login: step 4 body: %s", res.text[:2000])
+                    raise KevoAuthError()
             else:
                 _LOGGER.error("login: step 3 expected 302, got %s. Body: %s", res.status_code, res.text[:500])
                 res.raise_for_status()
