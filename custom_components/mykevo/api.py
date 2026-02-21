@@ -22,7 +22,7 @@ import websockets
 
 _LOGGER = logging.getLogger(__name__)
 
-from .const import (
+from aiokevoplus.const import (
     CLIENT_ID,
     CLIENT_SECRET,
     COMMAND_STATUS_CANCELLED,
@@ -493,23 +493,29 @@ class KevoApi:
 
                     client.cookies = res.cookies
 
+                    # parse_qs always returns lists — extract the first value.
                     post_params = {
                         "client_id": CLIENT_ID,
                         "client_secret": CLIENT_SECRET,
-                        "code": query_params["code"],
+                        "code": query_params["code"][0],
                         "code_verifier": code_verifier,
                         "grant_type": "authorization_code",
                         "redirect_uri": "https://mykevo.com/#/token",
                     }
 
                     try:
-                        _LOGGER.debug("login: step 5 - POST token exchange")
+                        _LOGGER.debug("login: step 5 - POST token exchange, code=%s", post_params["code"])
                         res = await client.post(
                             UNIKEY_LOGIN_URL_BASE + "/connect/token", data=post_params
                         )
+                        if res.status_code != 200:
+                            _LOGGER.error("login: step 5 status=%s body=%s", res.status_code, res.text)
                         res.raise_for_status()
-                    except Exception as ex:
+                    except httpx.HTTPStatusError as ex:
                         _LOGGER.error("login: step 5 failed: %s", ex)
+                        raise
+                    except Exception as ex:
+                        _LOGGER.error("login: step 5 unexpected error: %s", ex)
                         raise
 
                     json_response = res.json()
