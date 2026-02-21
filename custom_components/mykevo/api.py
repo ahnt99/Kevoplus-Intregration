@@ -22,7 +22,7 @@ import websockets
 
 _LOGGER = logging.getLogger(__name__)
 
-from .const import (
+from aiokevoplus.const import (
     CLIENT_ID,
     CLIENT_SECRET,
     COMMAND_STATUS_CANCELLED,
@@ -464,7 +464,15 @@ class KevoApi:
 
                 try:
                     _LOGGER.debug("login: step 4 - GET auth redirect")
-                    res = await client.get(UNIKEY_LOGIN_URL_BASE + redirect_location)
+                    # The Location header may be absolute or relative depending
+                    # on the server response. Prepending the base to an already-
+                    # absolute URL produces a garbage hostname that fails DNS.
+                    if redirect_location.startswith("http"):
+                        step4_url = redirect_location
+                    else:
+                        step4_url = UNIKEY_LOGIN_URL_BASE + redirect_location
+                    _LOGGER.debug("login: step 4 url -> %s", step4_url)
+                    res = await client.get(step4_url)
                 except Exception as ex:
                     _LOGGER.error("login: step 4 failed: %s", ex)
                     raise
