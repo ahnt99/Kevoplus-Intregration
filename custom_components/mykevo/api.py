@@ -22,7 +22,7 @@ import websockets
 
 _LOGGER = logging.getLogger(__name__)
 
-from .const import (
+from aiokevoplus.const import (
     CLIENT_ID,
     CLIENT_SECRET,
     COMMAND_STATUS_CANCELLED,
@@ -366,6 +366,16 @@ class KevoApi:
 
     async def login(self, username: str, password: str) -> None:
         """Login to the API."""
+        # Always start login with a fresh client. The httpx.AsyncClient
+        # accumulates cookies across requests, so a second login attempt reuses
+        # stale session cookies from the first one, causing the auth redirect
+        # chain to fail. Closing and recreating the client resets all state.
+        if self._client is not None and self._client_initialized:
+            await self._client.aclose()
+        self._client = None
+        self._client_initialized = False
+        # SSL context is already initialized — only reset the HTTP client.
+        # _async_init() will skip SSL creation and only rebuild the client.
         client = await self._get_client()
         code_verifier, code_challenge = pkce.generate_pkce_pair()
         certificate = self.__generate_certificate()
