@@ -366,83 +366,123 @@ class KevoApi:
 
     async def login(self, username: str, password: str) -> None:
         """Login to the API."""
-        # Always start login with a fresh client. The httpx.AsyncClient
-        # accumulates cookies across requests, so a second login attempt reuses
-        # stale session cookies from the first one, causing the auth redirect
-        # chain to fail. Closing and recreating the client resets all state.
+        # Always start login with a fresh client to clear stale cookies.
         if self._client is not None and self._client_initialized:
             await self._client.aclose()
         self._client = None
         self._client_initialized = False
-        # SSL context is already initialized — only reset the HTTP client.
-        # _async_init() will skip SSL creation and only rebuild the client.
         client = await self._get_client()
+
         code_verifier, code_challenge = pkce.generate_pkce_pair()
         certificate = self.__generate_certificate()
         md5hash = hashlib.md5(os.urandom(32))
         state = md5hash.hexdigest()
-        res = await client.get(
-            UNIKEY_LOGIN_URL_BASE + "/connect/authorize",
-            params={
-                "client_id": CLIENT_ID,
-                "redirect_uri": "https://mykevo.com/#/token",
-                "response_type": "code",
-                "scope": "openid email profile identity.api tumbler.api tumbler.ws offline_access",
-                "state": state,
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
-                "prompt": "login",
-                "response_mode": "query",
-                "acr_values": f"\n    appId:{CLIENT_ID}\n    tenant:{TENANT_ID}\n    tenantCode:KWK\n    tenantClientId:{CLIENT_ID}\n    loginContext:Web\n    deviceType:Browser\n    deviceName:Chrome,(Windows)\n    deviceMake:Chrome,108.0.0.0\n    deviceModel:Windows,10\n    deviceVersion:rp-1.0.2\n    staticDeviceId:{self._device_id}\n    deviceCertificate:{certificate}\n    isDark:false",
-            },
-        )
+
+        try:
+            _LOGGER.debug("login: step 1 - GET /connect/authorize")
+            res = await client.get(
+                UNIKEY_LOGIN_URL_BASE + "/connect/authorize",
+                params={
+                    "client_id": CLIENT_ID,
+                    "redirect_uri": "https://mykevo.com/#/token",
+                    "response_type": "code",
+                    "scope": "openid email profile identity.api tumbler.api tumbler.ws offline_access",
+                    "state": state,
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": "S256",
+                    "prompt": "login",
+                    "response_mode": "query",
+                    "acr_values": f"\n    appId:{CLIENT_ID}\n    tenant:{TENANT_ID}\n    tenantCode:KWK\n    tenantClientId:{CLIENT_ID}\n    loginContext:Web\n    deviceType:Browser\n    deviceName:Chrome,(Windows)\n    deviceMake:Chrome,108.0.0.0\n    deviceModel:Windows,10\n    deviceVersion:rp-1.0.2\n    staticDeviceId:{self._device_id}\n    deviceCertificate:{certificate}\n    isDark:false",
+                },
+            )
+        except Exception as ex:
+            _LOGGER.error("login: step 1 failed: %s", ex)
+            raise
+
+        _LOGGER.debug("login: step 1 status=%s", res.status_code)
 
         if res.status_code == 302:
             redirect_location = res.headers["Location"]
+            _LOGGER.debug("login: step 1 redirect -> %s", redirect_location)
             client.cookies = res.cookies
-            res = await client.get(redirect_location)
-            res.raise_for_status()
+
+            try:
+                _LOGGER.debug("login: step 2 - GET login page")
+                res = await client.get(redirect_location)
+                res.raise_for_status()
+            except Exception as ex:
+                _LOGGER.error("login: step 2 failed: %s", ex)
+                raise
+
             body_text = res.text
-            request_verification_token = next(
-                re.finditer(
-                    '<input name="__RequestVerificationToken" .+ value="(.+?)"',
-                    body_text,
-                )
-            ).group(1)
-            serialized_client = html.unescape(
-                next(
+            try:
+                request_verification_token = next(
                     re.finditer(
-                        '<input .+ name="SerializedClient" value="(.+?)"',
+                        '<input name="__RequestVerificationToken" .+ value="(.+?)"',
                         body_text,
                     )
                 ).group(1)
-            )
+                serialized_client = html.unescape(
+                    next(
+                        re.finditer(
+                            '<input .+ name="SerializedClient" value="(.+?)"',
+                            body_text,
+                        )
+                    ).group(1)
+                )
+            except StopIteration as ex:
+                _LOGGER.error("login: step 2 failed to parse login form. Response body snippet: %s", body_text[:500])
+                raise KevoAuthError() from ex
+
             client.cookies = res.cookies
 
-            res = await client.post(
-                UNIKEY_LOGIN_URL_BASE + "/account/login",
-                data={
-                    "SerializedClient": serialized_client,
-                    "NumFailedAttempts": 0,
-                    "Username": username,
-                    "Password": password,
-                    "login": "",
-                    "__RequestVerificationToken": request_verification_token,
-                },
-            )
+            try:
+                _LOGGER.debug("login: step 3 - POST credentials")
+                res = await client.post(
+                    UNIKEY_LOGIN_URL_BASE + "/account/login",
+                    data={
+                        "SerializedClient": serialized_client,
+                        "NumFailedAttempts": 0,
+                        "Username": username,
+                        "Password": password,
+                        "login": "",
+                        "__RequestVerificationToken": request_verification_token,
+                    },
+                )
+            except Exception as ex:
+                _LOGGER.error("login: step 3 failed: %s", ex)
+                raise
+
+            _LOGGER.debug("login: step 3 status=%s", res.status_code)
+
             if res.status_code == 302:
                 redirect_location = res.headers["Location"]
-                # Rather than get an exception when auth fails, we get here.
+                _LOGGER.debug("login: step 3 redirect -> %s", redirect_location)
                 if redirect_location == UNIKEY_INVALID_LOGIN_URL:
                     raise KevoAuthError()
                 client.cookies = res.cookies
-                res = await client.get(UNIKEY_LOGIN_URL_BASE + redirect_location)
+
+                try:
+                    _LOGGER.debug("login: step 4 - GET auth redirect")
+                    res = await client.get(UNIKEY_LOGIN_URL_BASE + redirect_location)
+                except Exception as ex:
+                    _LOGGER.error("login: step 4 failed: %s", ex)
+                    raise
+
+                _LOGGER.debug("login: step 4 status=%s", res.status_code)
+
                 if res.status_code == 302:
                     redirect_location = res.headers["Location"]
+                    _LOGGER.debug("login: step 4 redirect -> %s", redirect_location)
                     redirect_url = urlparse(redirect_location)
                     redirect_fragment = redirect_url.fragment
                     redirect_fragment_url = urlparse(redirect_fragment)
                     query_params = parse_qs(redirect_fragment_url.query)
+
+                    if "code" not in query_params:
+                        _LOGGER.error("login: step 4 no code in redirect fragment: %s", redirect_location)
+                        raise KevoAuthError()
+
                     client.cookies = res.cookies
 
                     post_params = {
@@ -453,10 +493,17 @@ class KevoApi:
                         "grant_type": "authorization_code",
                         "redirect_uri": "https://mykevo.com/#/token",
                     }
-                    res = await client.post(
-                        UNIKEY_LOGIN_URL_BASE + "/connect/token", data=post_params
-                    )
-                    res.raise_for_status()
+
+                    try:
+                        _LOGGER.debug("login: step 5 - POST token exchange")
+                        res = await client.post(
+                            UNIKEY_LOGIN_URL_BASE + "/connect/token", data=post_params
+                        )
+                        res.raise_for_status()
+                    except Exception as ex:
+                        _LOGGER.error("login: step 5 failed: %s", ex)
+                        raise
+
                     json_response = res.json()
                     self._access_token = json_response["access_token"]
                     self._id_token = json_response["id_token"]
@@ -466,11 +513,15 @@ class KevoApi:
                         self._id_token, options={"verify_signature": False}
                     )
                     self._user_id = jwt_value["sub"]
+                    _LOGGER.debug("login: success, user_id=%s", self._user_id)
                 else:
+                    _LOGGER.error("login: step 4 expected 302, got %s. Body: %s", res.status_code, res.text[:500])
                     res.raise_for_status()
             else:
+                _LOGGER.error("login: step 3 expected 302, got %s. Body: %s", res.status_code, res.text[:500])
                 res.raise_for_status()
         else:
+            _LOGGER.error("login: step 1 expected 302, got %s. Body: %s", res.status_code, res.text[:500])
             res.raise_for_status()
 
     def __process_message(self, message: str) -> None:
