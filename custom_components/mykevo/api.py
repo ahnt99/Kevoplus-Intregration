@@ -22,7 +22,7 @@ import websockets
 
 _LOGGER = logging.getLogger(__name__)
 
-from .const import (
+from aiokevoplus.const import (
     CLIENT_ID,
     CLIENT_SECRET,
     COMMAND_STATUS_CANCELLED,
@@ -79,16 +79,57 @@ class KevoApi:
             # internally, which does blocking I/O to load system CA certificates.
             # We store a sentinel here and defer actual creation to the first
             # async call via _get_ssl_context(), keeping __init__ non-blocking.
-            self._ssl_context = None
             self._ssl_context_initialized = False
         else:
             self._ssl_context_initialized = True
 
-        if self._client is None:
-            self._client = httpx.AsyncClient()
+        # httpx.AsyncClient() internally calls load_verify_locations() to load
+        # the certifi CA bundle — also a blocking I/O call. Defer creation to
+        # _get_client(), which reuses the already-lazy SSL context so both
+        # blocking calls are coalesced into a single run_in_executor call.
+        self._client_initialized = client is not None
 
         if self._device_id is None:
             self._device_id = uuid.uuid4()
+
+    async def _async_init(self) -> None:
+        """Perform deferred initialization of blocking resources.
+
+        Both ssl.create_default_context() and httpx.AsyncClient() trigger
+        blocking I/O (loading CA certificates) and must not be called directly
+        on the event loop. This method runs them together in an executor so the
+        overhead is paid once, on first use.
+        """
+        if self._ssl_context_initialized and self._client_initialized:
+            return
+
+        def _blocking_init():
+            ssl_ctx = self._ssl_context
+            if not self._ssl_context_initialized:
+                ssl_ctx = ssl.create_default_context()
+            http_client = self._client
+            if not self._client_initialized:
+                # Pass the freshly-created SSL context so httpx doesn't go
+                # and load certifi a second time on its own.
+                http_client = httpx.AsyncClient(verify=ssl_ctx)
+            return ssl_ctx, http_client
+
+        loop = asyncio.get_event_loop()
+        ssl_ctx, http_client = await loop.run_in_executor(None, _blocking_init)
+        self._ssl_context = ssl_ctx
+        self._ssl_context_initialized = True
+        self._client = http_client
+        self._client_initialized = True
+
+    async def _get_ssl_context(self) -> ssl.SSLContext:
+        """Return the SSL context, initializing async resources if needed."""
+        await self._async_init()
+        return self._ssl_context
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return the httpx client, initializing async resources if needed."""
+        await self._async_init()
+        return self._client
 
     def __generate_websocket_verification(self, cnonce: str, snonce: str) -> str:
         """Generate the verification value used to connect to the websocket."""
@@ -175,7 +216,7 @@ class KevoApi:
 
     async def __get_server_nonce(self) -> str:
         """Retrieve a server nonce."""
-        client = self._client
+        client = await self._get_client()
         client.headers = {"Content-Type": "application/json"}
         res = await client.post(
             UNIKEY_API_URL_BASE + "/api/v2/nonces",
@@ -206,7 +247,7 @@ class KevoApi:
 
     async def async_refresh_token(self) -> None:
         """Refresh the access token."""
-        client = self._client
+        client = await self._get_client()
         post_params = {
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,
@@ -225,7 +266,7 @@ class KevoApi:
 
     async def _api_post(self, url: str, body: dict):
         """POST to the API."""
-        client = self._client
+        client = await self._get_client()
 
         # Reauth if needed
         if self._expires_at < time.time() + 100:
@@ -264,7 +305,7 @@ class KevoApi:
 
     async def get_locks(self) -> list["KevoLock"]:
         """Retrieve the list of available locks."""
-        client = self._client
+        client = await self._get_client()
 
         # FIX 2: Check token expiry BEFORE fetching headers, consistent with
         # _api_post. Previously the expiry check came after __get_headers(),
@@ -325,7 +366,7 @@ class KevoApi:
 
     async def login(self, username: str, password: str) -> None:
         """Login to the API."""
-        client = self._client
+        client = await self._get_client()
         code_verifier, code_challenge = pkce.generate_pkce_pair()
         certificate = self.__generate_certificate()
         md5hash = hashlib.md5(os.urandom(32))
@@ -526,12 +567,13 @@ class KevoApi:
         # manual __websocket_reconnect() logic, potentially spawning multiple
         # concurrent connection tasks. We now use a plain `async with` instead,
         # letting __websocket_reconnect() own all reconnection responsibilities.
+        ssl_context = await self._get_ssl_context()
         try:
             async with websockets.connect(
                 UNIKEY_WS_URL_BASE + "/v3/web/" + self._user_id + query_string,
                 ping_interval=10,
                 user_agent_header="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
-                ssl=self._ssl_context
+                ssl=ssl_context
             ) as websocket:
                 self._reconnect_attempts = 0
                 self._websocket = websocket
