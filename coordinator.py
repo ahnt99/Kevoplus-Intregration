@@ -1,22 +1,47 @@
-from datetime import timedelta
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.core import HomeAssistant
-from homeassistant.config_entries import ConfigEntry
-from .api import MyIntegrationApi
-from .const import DOMAIN, DEFAULT_SCAN_INTERVAL
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-class MyDataUpdateCoordinator(DataUpdateCoordinator):
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
-        self.api = MyIntegrationApi(entry.data["api_key"])
+from datetime import timedelta
+import logging
+
+from .api import KevoApi
+from .const import CONF_USERNAME, CONF_PASSWORD
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class KevoCoordinator(DataUpdateCoordinator):
+
+    def __init__(self, hass: HomeAssistant, config):
         super().__init__(
             hass,
-            logger=hass.logger,
-            name=DOMAIN,
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            _LOGGER,
+            name="kevo_plus",
+            update_interval=timedelta(minutes=10),
         )
 
+        self.api = KevoApi()
+        self.username = config[CONF_USERNAME]
+        self.password = config[CONF_PASSWORD]
+
+        self.devices = []
+
+    async def async_setup(self):
+
+        await self.api.login(self.username, self.password)
+
+        self.devices = await self.api.get_locks()
+
+        self.api.register_callback(self._ws_callback)
+
+        await self.api.websocket_connect()
+
+    def _ws_callback(self, lock):
+        self.async_set_updated_data(lock)
+
     async def _async_update_data(self):
-        try:
-            return await self.api.async_get_data()
-        except Exception as err:
-            raise UpdateFailed(f"Error fetching data: {err}") from err
+        self.devices = await self.api.get_locks()
+        return self.devices
+
+    async def async_unload(self):
+        await self.api.websocket_close()
