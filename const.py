@@ -1,0 +1,2 @@
+DOMAIN = "my_integration"
+DEFAULT_SCAN_INTERVAL = 60
