@@ -459,57 +459,63 @@ class KevoApi:
             if res.status_code == 302:
                 redirect_location = res.headers["Location"]
                 _LOGGER.debug("login: step 3 redirect -> %s", redirect_location)
+                _LOGGER.debug("login: step 3 all headers -> %s", dict(res.headers))
+
+                # If step 3 redirected directly to mykevo.com, the code is
+                # already in this Location header's fragment — no step 4 needed.
+                parsed_step3 = urlparse(redirect_location)
+                fragment_params_step3 = parse_qs(urlparse(parsed_step3.fragment).query)
+                query_params_step3 = parse_qs(parsed_step3.query)
+                if "code" in fragment_params_step3:
+                    _LOGGER.debug("login: code found directly in step 3 fragment, skipping step 4")
+                    code = fragment_params_step3["code"][0]
+                    _do_token_exchange = True
+                elif "code" in query_params_step3:
+                    _LOGGER.debug("login: code found directly in step 3 query, skipping step 4")
+                    code = query_params_step3["code"][0]
+                    _do_token_exchange = True
+                else:
+                    code = None
+                    _do_token_exchange = False
+
                 if redirect_location == UNIKEY_INVALID_LOGIN_URL:
                     raise KevoAuthError()
                 client.cookies = res.cookies
 
-                try:
-                    _LOGGER.debug("login: step 4 - GET auth redirect")
-                    if redirect_location.startswith("http"):
-                        step4_url = redirect_location
+                if not _do_token_exchange:
+                    # Step 3 did not contain the code directly — follow the
+                    # redirect chain manually to find it.
+                    try:
+                        _LOGGER.debug("login: step 4 - GET auth redirect")
+                        if redirect_location.startswith("http"):
+                            step4_url = redirect_location
+                        else:
+                            step4_url = UNIKEY_LOGIN_URL_BASE + redirect_location
+                        _LOGGER.debug("login: step 4 url -> %s", step4_url)
+                        res = await client.get(step4_url, follow_redirects=False)
+                    except Exception as ex:
+                        _LOGGER.error("login: step 4 failed: %s", ex)
+                        raise
+
+                    _LOGGER.debug("login: step 4 status=%s headers=%s", res.status_code, dict(res.headers))
+
+                    if res.status_code == 302:
+                        loc = res.headers.get("location", "")
+                        _LOGGER.debug("login: step 4 location -> %s", loc)
+                        parsed = urlparse(loc)
+                        fragment_params = parse_qs(urlparse(parsed.fragment).query)
+                        query_params = parse_qs(parsed.query)
+                        if "code" in fragment_params:
+                            code = fragment_params["code"][0]
+                        elif "code" in query_params:
+                            code = query_params["code"][0]
+                        else:
+                            _LOGGER.error("login: step 4 no code in location: %s", loc)
+                            raise KevoAuthError()
+                        client.cookies = res.cookies
                     else:
-                        step4_url = UNIKEY_LOGIN_URL_BASE + redirect_location
-                    _LOGGER.debug("login: step 4 url -> %s", step4_url)
-                    # Follow redirects here so we can catch the final redirect
-                    # to mykevo.com regardless of how many hops there are.
-                    # We read the code from res.url (the final URL) since the
-                    # auth server puts the code in the fragment of the redirect
-                    # URI (https://mykevo.com/#/token?code=...).
-                    res = await client.get(step4_url, follow_redirects=True)
-                except Exception as ex:
-                    _LOGGER.error("login: step 4 failed: %s", ex)
-                    raise
-
-                _LOGGER.debug("login: step 4 final url=%s status=%s", res.url, res.status_code)
-
-                # The code lands in the fragment of the final redirect URL.
-                # res.url is the URL httpx actually fetched (after following
-                # redirects), but fragments are never sent to the server so
-                # httpx won't have them. We need to look at the redirect history
-                # to find the last Location header that contained the fragment.
-                code = None
-                for hist_resp in reversed(res.history):
-                    loc = hist_resp.headers.get("location", "")
-                    _LOGGER.debug("login: step 4 history location -> %s", loc)
-                    parsed = urlparse(loc)
-                    # Fragment-based redirect: https://mykevo.com/#/token?code=...
-                    fragment_params = parse_qs(urlparse(parsed.fragment).query)
-                    if "code" in fragment_params:
-                        code = fragment_params["code"][0]
-                        _LOGGER.debug("login: step 4 found code in fragment")
-                        break
-                    # Query-based redirect: https://mykevo.com/token?code=...
-                    query_params = parse_qs(parsed.query)
-                    if "code" in query_params:
-                        code = query_params["code"][0]
-                        _LOGGER.debug("login: step 4 found code in query")
-                        break
-
-                if code is None:
-                    _LOGGER.error("login: step 4 could not find code. History: %s", [r.headers.get("location") for r in res.history])
-                    raise KevoAuthError()
-
-                client.cookies = res.cookies
+                        _LOGGER.error("login: step 4 expected 302, got %s. Body snippet: %s", res.status_code, res.text[:500])
+                        raise KevoAuthError()
 
                 post_params = {
                     "client_id": CLIENT_ID,
