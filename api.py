@@ -21,7 +21,7 @@ import websockets
 
 from urllib.parse import urlparse, parse_qs, quote
 
-from const import (
+from .const import (
     CLIENT_ID,
     CLIENT_SECRET,
     COMMAND_STATUS_CANCELLED,
