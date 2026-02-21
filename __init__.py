@@ -1,20 +1,33 @@
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from .coordinator import MyDataUpdateCoordinator
 
-PLATFORMS = ["sensor"]
+from .const import DOMAIN, PLATFORMS
+from .coordinator import KevoCoordinator
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    coordinator = MyDataUpdateCoordinator(hass, entry)
-    await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault("my_integration", {})[entry.entry_id] = coordinator
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
+    coordinator = KevoCoordinator(hass, entry.data)
+
+    await coordinator.async_setup()
+
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
     return True
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    await coordinator.async_unload()
+
+    unload_ok = await hass.config_entries.async_unload_platforms(
+        entry, PLATFORMS
+    )
+
     if unload_ok:
-        hass.data["my_integration"].pop(entry.entry_id)
+        hass.data[DOMAIN].pop(entry.entry_id)
+
     return unload_ok
