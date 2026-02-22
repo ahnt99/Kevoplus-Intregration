@@ -22,7 +22,7 @@ import websockets
 
 _LOGGER = logging.getLogger(__name__)
 
-from .const import (
+from aiokevoplus.const import (
     CLIENT_ID,
     CLIENT_SECRET,
     COMMAND_STATUS_CANCELLED,
@@ -373,6 +373,11 @@ class KevoApi:
         self._client_initialized = False
         client = await self._get_client()
 
+        # Generate a fresh device identity for every login attempt.
+        # The identity server ties its session to the staticDeviceId — reusing
+        # one from a previous login causes /account/accounterror on the callback.
+        self._device_id = uuid.uuid4()
+
         code_verifier, code_challenge = pkce.generate_pkce_pair()
         certificate = self.__generate_certificate()
         md5hash = hashlib.md5(os.urandom(32))
@@ -483,38 +488,55 @@ class KevoApi:
                 client.cookies = res.cookies
 
                 if not _do_token_exchange:
-                    # Step 3 did not contain the code directly — follow the
-                    # redirect chain manually to find it.
-                    try:
-                        _LOGGER.debug("login: step 4 - GET auth redirect")
-                        if redirect_location.startswith("http"):
-                            step4_url = redirect_location
-                        else:
-                            step4_url = UNIKEY_LOGIN_URL_BASE + redirect_location
-                        _LOGGER.debug("login: step 4 url -> %s", step4_url)
-                        res = await client.get(step4_url, follow_redirects=False)
-                    except Exception as ex:
-                        _LOGGER.error("login: step 4 failed: %s", ex)
-                        raise
+                    # Step 3 pointed to the identity server callback, not
+                    # directly to mykevo.com. Follow redirects one hop at a
+                    # time, stopping as soon as we reach mykevo.com (which
+                    # serves a SPA and must never be fetched).
+                    current_url = redirect_location
+                    if not current_url.startswith("http"):
+                        current_url = UNIKEY_LOGIN_URL_BASE + current_url
 
-                    _LOGGER.debug("login: step 4 status=%s headers=%s", res.status_code, dict(res.headers))
+                    for hop in range(10):  # safety limit
+                        _LOGGER.debug("login: step 4 hop %d -> %s", hop, current_url)
 
-                    if res.status_code == 302:
-                        loc = res.headers.get("location", "")
-                        _LOGGER.debug("login: step 4 location -> %s", loc)
-                        parsed = urlparse(loc)
-                        fragment_params = parse_qs(urlparse(parsed.fragment).query)
-                        query_params = parse_qs(parsed.query)
-                        if "code" in fragment_params:
-                            code = fragment_params["code"][0]
-                        elif "code" in query_params:
-                            code = query_params["code"][0]
+                        # Never fetch mykevo.com — parse the code from the URL directly.
+                        # Check netloc only, not the full URL which may contain
+                        # mykevo.com encoded inside a redirect_uri query parameter.
+                        if urlparse(current_url).netloc == "mykevo.com":
+                            _LOGGER.debug("login: step 4 reached mykevo.com, extracting code")
+                            parsed = urlparse(current_url)
+                            fragment_params = parse_qs(urlparse(parsed.fragment).query)
+                            query_params = parse_qs(parsed.query)
+                            if "code" in fragment_params:
+                                code = fragment_params["code"][0]
+                            elif "code" in query_params:
+                                code = query_params["code"][0]
+                            else:
+                                _LOGGER.error("login: step 4 no code in mykevo url: %s", current_url)
+                                raise KevoAuthError()
+                            _do_token_exchange = True
+                            break
+
+                        try:
+                            res = await client.get(current_url, follow_redirects=False)
+                        except Exception as ex:
+                            _LOGGER.error("login: step 4 hop %d failed: %s", hop, ex)
+                            raise
+
+                        _LOGGER.debug("login: step 4 hop %d status=%s", hop, res.status_code)
+
+                        if res.status_code == 302:
+                            current_url = res.headers.get("location", "")
+                            _LOGGER.debug("login: step 4 hop %d location -> %s", hop, current_url)
+                            client.cookies = res.cookies
+                            if not current_url.startswith("http"):
+                                current_url = UNIKEY_LOGIN_URL_BASE + current_url
                         else:
-                            _LOGGER.error("login: step 4 no code in location: %s", loc)
+                            _LOGGER.error("login: step 4 hop %d expected 302, got %s. url=%s body=%s",
+                                hop, res.status_code, current_url, res.text[:300])
                             raise KevoAuthError()
-                        client.cookies = res.cookies
                     else:
-                        _LOGGER.error("login: step 4 expected 302, got %s. Body snippet: %s", res.status_code, res.text[:500])
+                        _LOGGER.error("login: step 4 exceeded redirect limit without finding code")
                         raise KevoAuthError()
 
                 post_params = {
