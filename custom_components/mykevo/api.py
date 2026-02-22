@@ -85,7 +85,7 @@ class KevoApi:
         self._client_initialized = client is not None
 
     async def _async_init(self) -> None:
-        """Lazily initialise SSL context and HTTP client off the event loop."""
+        """Lazily initialize SSL context and HTTP client off the event loop."""
         if self._ssl_context_initialized and self._client_initialized:
             return
 
@@ -95,7 +95,7 @@ class KevoApi:
                 ssl_ctx = ssl.create_default_context()
             http_client = self._client
             if not self._client_initialized:
-                # Reuse our SSL context so httpx doesn't load certifi again.
+                # Reuse our SSL context so httpx doesn't load certificate again.
                 http_client = httpx.AsyncClient(
                     verify=ssl_ctx, follow_redirects=False
                 )
