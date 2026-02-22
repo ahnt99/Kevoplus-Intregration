@@ -1,7 +1,7 @@
 """Support for Kevo Plus locks."""
 from typing import Any
 
-from aiokevoplus import KevoAuthError, KevoLock
+from .api import KevoAuthError, KevoLock
 from homeassistant.components.lock import LockEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
