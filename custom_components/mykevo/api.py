@@ -258,7 +258,7 @@ class KevoApi:
         certificate = self.__generate_certificate()
         state = hashlib.md5(os.urandom(32)).hexdigest()
 
-        # Step 1: initiate the authorisation flow.
+        # Step 1: initiate the authorization flow.
         res = await client.get(
             UNIKEY_LOGIN_URL_BASE + "/connect/authorize",
             follow_redirects=False,
