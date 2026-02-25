@@ -85,7 +85,7 @@ class KevoApi:
         self._client_initialized = client is not None
 
     async def _async_init(self) -> None:
-        """Lazily initialize SSL context and HTTP client off the event loop."""
+        """Lazily initialise SSL context and HTTP client off the event loop."""
         if self._ssl_context_initialized and self._client_initialized:
             return
 
@@ -95,7 +95,7 @@ class KevoApi:
                 ssl_ctx = ssl.create_default_context()
             http_client = self._client
             if not self._client_initialized:
-                # Reuse our SSL context so httpx doesn't load certificate again.
+                # Reuse our SSL context so httpx doesn't load certifi again.
                 http_client = httpx.AsyncClient(
                     verify=ssl_ctx, follow_redirects=False
                 )
@@ -258,7 +258,7 @@ class KevoApi:
         certificate = self.__generate_certificate()
         state = hashlib.md5(os.urandom(32)).hexdigest()
 
-        # Step 1: initiate the authorization flow.
+        # Step 1: initiate the authorisation flow.
         res = await client.get(
             UNIKEY_LOGIN_URL_BASE + "/connect/authorize",
             follow_redirects=False,
@@ -509,8 +509,22 @@ class KevoApi:
         except Exception as ex:
             _LOGGER.error("Error processing websocket message: %s", ex)
 
-    async def __websocket_reconnect(self) -> None:
-        """Schedule a reconnect with exponential backoff."""
+    async def __websocket_reconnect(self, refresh_token: bool = False) -> None:
+        """Schedule a reconnect with exponential backoff.
+
+        If refresh_token is True the access token is refreshed before the next
+        attempt — used when the server rejects the connection with HTTP 401.
+        """
+        if refresh_token:
+            try:
+                await self.async_refresh_token()
+                # A successful token refresh resets the backoff so we reconnect
+                # quickly rather than waiting out the full backoff delay.
+                self._reconnect_attempts = 0
+            except Exception as ex:
+                _LOGGER.error("WebSocket token refresh failed: %s", ex)
+                # Refresh failed — keep the backoff delay so we don't spam.
+
         self._reconnect_attempts += 1
         delay = min(2 ** self._reconnect_attempts, self.MAX_RECONNECT_DELAY)
         await asyncio.sleep(delay)
@@ -526,6 +540,12 @@ class KevoApi:
 
     async def __websocket_connect(self) -> None:
         """Open the websocket and listen for lock state updates."""
+        # Ensure the token is fresh before building the auth query string.
+        # If the token is about to expire (or already expired from a previous
+        # 401 cycle) this refreshes it proactively rather than waiting for
+        # the server to reject the connection.
+        await self._ensure_fresh_token()
+
         auth_token = quote(f"Bearer {self._access_token}", safe="!~*'()")
         cnonce = self.__get_client_nonce()
         try:
@@ -571,8 +591,15 @@ class KevoApi:
                 _LOGGER.error("WebSocket connection closed, retrying")
                 await self.__websocket_reconnect()
         except Exception as ex:
-            _LOGGER.error("WebSocket error: %s, retrying", ex)
-            await self.__websocket_reconnect()
+            err_str = str(ex)
+            if "401" in err_str:
+                # The server rejected the connection because the token has
+                # expired. Refresh it before the next reconnect attempt.
+                _LOGGER.warning("WebSocket token expired (HTTP 401), refreshing and retrying")
+                await self.__websocket_reconnect(refresh_token=True)
+            else:
+                _LOGGER.error("WebSocket error: %s, retrying", ex)
+                await self.__websocket_reconnect()
 
     async def websocket_connect(self) -> asyncio.Task:
         """Start the websocket listener as a background task."""
