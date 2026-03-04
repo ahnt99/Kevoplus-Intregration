@@ -1,4 +1,4 @@
-DOMAIN = "kevo_plus"
+DOMAIN = "mykevo"
 CONF_LOCKS = "locks"
 MODEL = "Kevo"
 DEFAULT_SCAN_INTERVAL = 60
