@@ -53,8 +53,13 @@ A Home Assistant custom integration for **Kwikset Kevo** smart locks, providing 
            ├── manifest.json
            ├── sensor.py
            └── strings.json
-              └── translations
-                  └──en.json
+              └── translations/
+                  └── en.json
+              └── brand/
+                  ├── icon.png
+                  ├── icon@2x.png
+                  ├── logo.png
+                  └── logo@2x.png 
    ```
 3. Restart Home Assistant
 
