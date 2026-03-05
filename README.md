@@ -39,7 +39,7 @@ A Home Assistant custom integration for **Kwikset Kevo** smart locks, providing 
 
 ### Manual Installation
 
-1. Download zip from this repository
+1. Download [zip](https://github.com/ahnt99/Kevoplus-Intregration/archive/refs/heads/main.zip) from this repository
 2. Extract and copy files in the `mykevo` folder into your HA `config/custom_components/mykevo` directory:
    ```
    config/
