@@ -85,7 +85,7 @@ class KevoApi:
         self._client_initialized = client is not None
 
     async def _async_init(self) -> None:
-        """Lazily initialize SSL context and HTTP client off the event loop."""
+        """Lazily initialise SSL context and HTTP client off the event loop."""
         if self._ssl_context_initialized and self._client_initialized:
             return
 
@@ -95,7 +95,7 @@ class KevoApi:
                 ssl_ctx = ssl.create_default_context()
             http_client = self._client
             if not self._client_initialized:
-                # Reuse our SSL context so httpx doesn't load certification again.
+                # Reuse our SSL context so httpx doesn't load certifi again.
                 http_client = httpx.AsyncClient(
                     verify=ssl_ctx, follow_redirects=False
                 )
@@ -217,7 +217,11 @@ class KevoApi:
         self._expires_at = time.time() + json_response["expires_in"]
 
     async def async_refresh_token(self) -> None:
-        """Refresh the access token using the stored refresh token."""
+        """Refresh the access token using the stored refresh token.
+
+        Raises KevoAuthError if the refresh token has expired or been
+        invalidated — the caller should trigger re-authentication.
+        """
         client = await self._get_client()
         res = await client.post(
             UNIKEY_LOGIN_URL_BASE + "/connect/token",
@@ -228,7 +232,19 @@ class KevoApi:
                 "refresh_token": self._refresh_token,
             },
         )
-        res.raise_for_status()
+        try:
+            res.raise_for_status()
+        except httpx.HTTPStatusError as ex:
+            if ex.response.status_code in (400, 401):
+                # 400 means the refresh token is expired or invalid.
+                # 401 means the credentials are no longer accepted.
+                # Either way the session is dead — require a full re-login.
+                _LOGGER.warning(
+                    "Token refresh failed with %s — re-authentication required",
+                    ex.response.status_code,
+                )
+                raise KevoAuthError() from ex
+            raise
         self._store_tokens(res.json())
 
     async def _ensure_fresh_token(self) -> None:
@@ -258,7 +274,7 @@ class KevoApi:
         certificate = self.__generate_certificate()
         state = hashlib.md5(os.urandom(32)).hexdigest()
 
-        # Step 1: initiate the authorization flow.
+        # Step 1: initiate the authorisation flow.
         res = await client.get(
             UNIKEY_LOGIN_URL_BASE + "/connect/authorize",
             follow_redirects=False,
@@ -391,7 +407,10 @@ class KevoApi:
     async def _api_post(self, url: str, body: dict):
         """POST to the Unikey API, retrying once after a token refresh on 403."""
         client = await self._get_client()
-        await self._ensure_fresh_token()
+        try:
+            await self._ensure_fresh_token()
+        except KevoAuthError:
+            raise  # refresh token is dead — bubble up for HA re-auth
         headers = await self.__get_headers()
 
         res = await client.post(UNIKEY_API_URL_BASE + url, headers=headers, json=body)
