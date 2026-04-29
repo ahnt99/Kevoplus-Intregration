@@ -30,8 +30,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     password = entry.data.get(CONF_PASSWORD)
-    device_id = uuid.UUID(bytes=hashlib.md5(password.encode()).digest())
-    client = KevoApi(device_id)
+    # Use a random device_id — the MD5-derived one causes the Unikey server
+    # to reject re-logins because it remembers the stale session for that UUID.
+    client = KevoApi()
 
     try:
         await client.login(entry.data.get(CONF_USERNAME), password)

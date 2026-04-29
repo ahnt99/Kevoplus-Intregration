@@ -41,8 +41,48 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Hande reauthentication step."""
-        return await self.async_step_user()
+        """Handle reauthentication — called when KevoAuthError is raised."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Show re-auth form and update the existing entry on success."""
+        errors = {}
+
+        if user_input is not None:
+            try:
+                # Always use a fresh random device_id for re-auth — deriving it
+                # from the password produces the same UUID every time, which the
+                # Unikey server rejects because it remembers the stale session.
+                api = KevoApi()
+                await api.login(user_input[CONF_USERNAME], user_input[CONF_PASSWORD])
+                # Update the stored credentials in the existing config entry.
+                self.hass.config_entries.async_update_entry(
+                    self._get_reauth_entry(),
+                    data={
+                        **self._get_reauth_entry().data,
+                        CONF_USERNAME: user_input[CONF_USERNAME],
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                    },
+                )
+                await self.hass.config_entries.async_reload(
+                    self._get_reauth_entry().entry_id
+                )
+                return self.async_abort(reason="reauth_successful")
+            except KevoAuthError:
+                errors["base"] = "invalid_auth"
+            except (ConnectError, ConnectTimeout):
+                errors["base"] = "cannot_connect"
+            except Exception as ex:
+                _LOGGER.exception("Unexpected exception during reauth: %s", ex)
+                errors["base"] = "unknown"
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=STEP_USER_DATA_SCHEMA,
+            errors=errors,
+        )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -56,10 +96,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         try:
-            device_id = uuid.UUID(
-                bytes=hashlib.md5(user_input[CONF_PASSWORD].encode()).digest()
-            )
-            self._api = KevoApi(device_id)
+            # Use a fresh random device_id — deriving it from the password
+            # produces the same UUID on every attempt, causing the Unikey
+            # server to reject re-logins with an account error.
+            self._api = KevoApi()
 
             await self._api.login(user_input[CONF_USERNAME], user_input[CONF_PASSWORD])
             self._locks = {dev.lock_id: dev.name for dev in await self._api.get_locks()}

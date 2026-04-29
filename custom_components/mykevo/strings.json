@@ -8,11 +8,19 @@
         "abort": {
             "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
             "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
-            "unknown": "[%key:common::config_flow::error::unknown%]"
+            "unknown": "[%key:common::config_flow::error::unknown%]",
+            "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
         },
         "step": {
             "user": {
                 "description": "Login using your credentials from mykevo.com. You must opt into the new experience and the username/password used must have an Admin eKey for this to work.",
+                "data": {
+                    "password": "[%key:common::config_flow::data::password%]",
+                    "username": "[%key:common::config_flow::data::username%]"
+                }
+            },
+            "reauth_confirm": {
+                "description": "Your session has expired. Please re-enter your mykevo.com credentials.",
                 "data": {
                     "password": "[%key:common::config_flow::data::password%]",
                     "username": "[%key:common::config_flow::data::username%]"
