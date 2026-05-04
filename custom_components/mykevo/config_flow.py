@@ -8,7 +8,7 @@ from typing import Any
 
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
-from .api import KevoApi, KevoAuthError
+from .api import KevoApi, KevoAuthError, KevoTokenExpiredError
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback

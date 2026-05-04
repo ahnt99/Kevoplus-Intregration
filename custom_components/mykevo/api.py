@@ -48,6 +48,13 @@ class KevoError(Exception):
 
 
 class KevoAuthError(KevoError):
+    """Credentials are invalid — user must re-authenticate."""
+    pass
+
+
+class KevoTokenExpiredError(KevoAuthError):
+    """The refresh token has expired — a silent re-login should be attempted
+    before falling back to prompting the user for credentials."""
     pass
 
 
@@ -235,14 +242,16 @@ class KevoApi:
         try:
             res.raise_for_status()
         except httpx.HTTPStatusError as ex:
-            if ex.response.status_code in (400, 401):
-                # 400 means the refresh token is expired or invalid.
-                # 401 means the credentials are no longer accepted.
-                # Either way the session is dead — require a full re-login.
-                _LOGGER.warning(
-                    "Token refresh failed with %s — re-authentication required",
-                    ex.response.status_code,
-                )
+            if ex.response.status_code == 400:
+                # 400 means the refresh token is expired or revoked.
+                # Raise KevoTokenExpiredError so the coordinator can attempt
+                # a silent re-login before falling back to prompting the user.
+                _LOGGER.warning("Refresh token expired (400) — will attempt re-login")
+                raise KevoTokenExpiredError() from ex
+            if ex.response.status_code == 401:
+                # 401 means the credentials themselves are rejected.
+                # Skip silent re-login and go straight to re-auth prompt.
+                _LOGGER.warning("Refresh token rejected (401) — re-authentication required")
                 raise KevoAuthError() from ex
             raise
         self._store_tokens(res.json())

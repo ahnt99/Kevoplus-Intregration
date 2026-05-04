@@ -1,12 +1,10 @@
-"""The Kevo Plus integration."""
+"""The MyKevo integration."""
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import uuid
 
-from .api import KevoApi, KevoAuthError
+from .api import KevoApi, KevoAuthError, KevoTokenExpiredError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_PASSWORD,
@@ -26,24 +24,19 @@ PLATFORMS: list[Platform] = [Platform.LOCK, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Kevo Plus from a config entry."""
+    """Set up MyKevo from a config entry."""
 
     hass.data.setdefault(DOMAIN, {})
-    password = entry.data.get(CONF_PASSWORD)
-    # Use a random device_id — the MD5-derived one causes the Unikey server
-    # to reject re-logins because it remembers the stale session for that UUID.
     client = KevoApi()
 
     try:
-        await client.login(entry.data.get(CONF_USERNAME), password)
+        await client.login(entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD])
     except KevoAuthError as auth_ex:
         raise ConfigEntryAuthFailed("Invalid credentials") from auth_ex
     except Exception as ex:
         raise ConfigEntryNotReady("Error connecting to Kevo server") from ex
 
-    locks = entry.options.get(CONF_LOCKS)
-    if locks is None:
-        locks = entry.data.get(CONF_LOCKS)
+    locks = entry.options.get(CONF_LOCKS) or entry.data.get(CONF_LOCKS)
     coordinator = KevoCoordinator(hass, client, entry, locks)
     try:
         await coordinator.get_devices()
@@ -57,7 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
     async def _async_disconnect(event: Event) -> None:
-        """Disconnect from Websocket."""
+        """Disconnect from WebSocket on HA shutdown."""
         await hass.data[DOMAIN][entry.entry_id].api.websocket_close()
 
     entry.async_on_unload(
@@ -68,7 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload to update options."""
+    """Reload to apply updated options."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
@@ -88,12 +81,7 @@ class KevoCoordinator(DataUpdateCoordinator):
         self, hass: HomeAssistant, api: KevoApi, entry: ConfigEntry, locks: list[str]
     ) -> None:
         """Initialize the coordinator."""
-        super().__init__(
-            hass,
-            _LOGGER,
-            # Name of the data. For logging purposes.
-            name="Kevo",
-        )
+        super().__init__(hass, _LOGGER, name="Kevo")
         self.api = api
         self.hass = hass
         self.entry = entry
@@ -101,12 +89,37 @@ class KevoCoordinator(DataUpdateCoordinator):
         self._device_lock = asyncio.Lock()
         self._selected_locks = locks
 
+    async def relogin(self) -> bool:
+        """Re-login using stored credentials without user interaction.
+
+        Called automatically when a token refresh fails. Returns True if
+        successful, False if the credentials themselves are invalid (in which
+        case the HA re-auth prompt is shown as a last resort).
+        """
+        try:
+            _LOGGER.warning("Session expired — re-logging in automatically")
+            await self.api.login(
+                self.entry.data[CONF_USERNAME],
+                self.entry.data[CONF_PASSWORD],
+            )
+            _LOGGER.info("Automatic re-login successful")
+            return True
+        except KevoAuthError:
+            _LOGGER.error(
+                "Automatic re-login failed — credentials may have changed. "
+                "Re-authentication required."
+            )
+            return False
+        except Exception as ex:
+            _LOGGER.error("Automatic re-login error: %s", ex)
+            return False
+
     async def get_all_devices(self) -> list:
-        """Retrieve all devices available in the api."""
+        """Retrieve all devices available in the API."""
         return await self.api.get_locks()
 
     async def get_devices(self) -> list:
-        """Retrieve the devices associated with the coordinator."""
+        """Retrieve the devices associated with this coordinator."""
         async with self._device_lock:
             if self._devices is None:
                 try:
@@ -115,7 +128,18 @@ class KevoCoordinator(DataUpdateCoordinator):
                         for device in await self.api.get_locks()
                         if device.lock_id in self._selected_locks
                     ]
+                except KevoTokenExpiredError:
+                    # Refresh token expired — try silent re-login first.
+                    if await self.relogin():
+                        self._devices = [
+                            device
+                            for device in await self.api.get_locks()
+                            if device.lock_id in self._selected_locks
+                        ]
+                    else:
+                        await self.entry.async_start_reauth(self.hass)
                 except KevoAuthError:
+                    # Credentials are genuinely wrong — prompt the user.
                     await self.entry.async_start_reauth(self.hass)
             return self._devices
 
