@@ -190,9 +190,12 @@ class KevoApi:
     async def __get_server_nonce(self) -> str:
         """Retrieve a server nonce."""
         client = await self._get_client()
-        client.headers = {"Content-Type": "application/json"}
+        # Pass Content-Type as a per-request header, not client.headers —
+        # assigning to client.headers overwrites the shared default headers
+        # and can corrupt subsequent requests that rely on them.
         res = await client.post(
             UNIKEY_API_URL_BASE + "/api/v2/nonces",
+            headers={"Content-Type": "application/json"},
             json={"headers": {"Accept": "application/json"}},
         )
         res.raise_for_status()
@@ -578,10 +581,17 @@ class KevoApi:
         cnonce = self.__get_client_nonce()
         try:
             snonce = await self.__get_server_nonce()
-        except httpx.HTTPStatusError:
-            raise
-        except Exception:
-            _LOGGER.error("Failed to retrieve server nonce, retrying")
+        except httpx.HTTPStatusError as ex:
+            status = ex.response.status_code
+            _LOGGER.error("Server nonce request failed with HTTP %s", status)
+            if status in (400, 401):
+                # Token expired — refresh before retrying the websocket.
+                await self.__websocket_reconnect(refresh_token=True)
+            else:
+                await self.__websocket_reconnect()
+            return
+        except Exception as ex:
+            _LOGGER.error("Failed to retrieve server nonce: %s", ex)
             await self.__websocket_reconnect()
             return
 
